@@ -1,0 +1,108 @@
+diff --git a/apps/daemon/src/agents.ts b/apps/daemon/src/agents.ts
+--- a/apps/daemon/src/agents.ts
++++ b/apps/daemon/src/agents.ts
+@@ -7,6 +7,7 @@
+ import path from 'node:path';
+ import { detectAcpModels } from './acp.js';
+ import { parsePiModels } from './pi-rpc.js';
++import { fetchOllamaModels } from './ollama-stream.js';
+ 
+ const execFileP = promisify(execFile);
+ 
+@@ -525,6 +526,38 @@
+     buildArgs: () => ['acp'],
+     streamFormat: 'acp-json-rpc',
+   },
++  {
++    id: 'ollama',
++    name: 'Ollama (Local LLM)',
++    bin: 'ollama',
++    versionArgs: ['--version'],
++    fetchModels: async (_resolvedBin) => fetchOllamaModels(DEFAULT_MODEL_OPTION),
++    fallbackModels: [
++      DEFAULT_MODEL_OPTION,
++      { id: 'llama3', label: 'Llama 3' },
++      { id: 'llama3.1', label: 'Llama 3.1' },
++      { id: 'llama3.2', label: 'Llama 3.2' },
++      { id: 'mistral', label: 'Mistral 7B' },
++      { id: 'qwen2.5-coder', label: 'Qwen 2.5 Coder' },
++      { id: 'codellama', label: 'Code Llama' },
++      { id: 'deepseek-coder-v2', label: 'DeepSeek Coder V2' },
++      { id: 'gemma2', label: 'Gemma 2' },
++      { id: 'phi3', label: 'Phi-3' },
++    ],
++    buildArgs: () => [],
++    promptViaStdin: false,
++    streamFormat: 'ollama-http',
++  },
+ ];
+ 
+@@ -609,6 +642,25 @@
+ async function probe(def) {
+   const resolved = resolveOnPath(def.bin);
+   if (!resolved) {
++    if (def.streamFormat === 'ollama-http' && typeof def.fetchModels === 'function') {
++      try {
++        const models = await def.fetchModels(null);
++        if (models && models.length > 0) {
++          return {
++            ...stripFns(def),
++            models,
++            available: true,
++            path: null,
++            version: 'HTTP service detected',
++          };
++        }
++      } catch {
++        // HTTP detection failed
++      }
++    }
+     return {
+       ...stripFns(def),
+
+diff --git a/apps/daemon/src/server.ts b/apps/daemon/src/server.ts
+--- a/apps/daemon/src/server.ts
++++ b/apps/daemon/src/server.ts
+@@ -22,6 +22,7 @@
+ import { createClaudeStreamHandler } from './claude-stream.js';
+ import { createCopilotStreamHandler } from './copilot-stream.js';
+ import { createJsonEventStreamHandler } from './json-event-stream.js';
++import { startOllamaStream } from './ollama-stream.js';
+ import { renderDesignSystemPreview } from './design-system-preview.js';
+
+@@ -1648,7 +1649,8 @@
+     const def = getAgentDef(agentId);
+     if (!def) return design.runs.fail(run, 'AGENT_UNAVAILABLE', `unknown agent: ${agentId}`);
+-    if (!def.bin) return design.runs.fail(run, 'AGENT_UNAVAILABLE', 'agent has no binary');
++    if (!def.bin && def.streamFormat !== 'ollama-http') return design.runs.fail(run, 'AGENT_UNAVAILABLE', 'agent has no binary');
+
+@@ -1810,6 +1812,58 @@
+     const args = def.buildArgs(effectivePrompt, safeImages, extraAllowedDirs, agentOptions, { cwd });
+     const send = (event, data) => design.runs.emit(run, event, data);
+ 
++    if (def.streamFormat === 'ollama-http') {
++      const ollamaModel = safeModel && safeModel !== 'default' ? safeModel : 'llama3';
++      if (run.cancelRequested || design.runs.isTerminal(run.status)) return;
++      run.status = 'running';
++      run.updatedAt = Date.now();
++      send('start', {
++        runId: run.id, agentId, bin: 'ollama (HTTP)',
++        streamFormat: 'ollama-http',
++        projectId: typeof projectId === 'string' ? projectId : null,
++        cwd, model: ollamaModel, reasoning: null,
++      });
++      const ollama = startOllamaStream({ model: ollamaModel, prompt: composed, send });
++      run.child = { kill: () => ollama.cancel(), killed: false, pid: null };
++      ollama.promise
++        .then(() => {
++          if (!run.cancelRequested) design.runs.finish(run, 'succeeded', 0, null);
++          else design.runs.finish(run, 'canceled', 0, null);
++        })
++        .catch((err) => {
++          send('error', createSseErrorPayload('AGENT_EXECUTION_FAILED', err.message));
++          design.runs.finish(run, 'failed', 1, null);
++        });
++      return;
++    }
++
+     // resolvedBin was already looked up above...
