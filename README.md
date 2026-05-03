@@ -193,11 +193,36 @@ git apply /path/to/ollama-open-design/patches/ollama-integration.patch
 
 Or manually apply the changes — see the [Detailed Changes](#-detailed-changes-manual-method) section below.
 
-### Step 4: Start Open Design
+### Step 4: Build and Start Open Design
 
-```bash
-pnpm tools-dev run web
-```
+You can run Open Design either as a local Web App or build it into a Windows Executable (`.exe`).
+
+**Option A: Run as a Local Web App**
+1. Open your terminal and go to the `open-design-main` folder:
+   ```bash
+   cd /path/to/open-design-main
+   ```
+2. Start the local development server:
+   ```bash
+   pnpm tools-dev run web
+   ```
+3. Open the URL shown in your terminal (usually `http://127.0.0.1:47680`).
+
+**Option B: Build as a Windows Executable (.exe)**
+1. Open your terminal and go to the `open-design-main` folder:
+   ```bash
+   cd /path/to/open-design-main
+   ```
+2. Build the web assets:
+   ```bash
+   pnpm run build
+   ```
+3. Package the application into an `.exe` installer:
+   ```bash
+   pnpm run tools-pack win build --to all
+   ```
+4. Find your generated `.exe` installer in:
+   `.tmp/tools-pack/out/win/namespaces/default/builder/`
 
 ### Step 5: Select Ollama in the UI
 
